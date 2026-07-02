@@ -1,6 +1,4 @@
-# Backtest data files (contain business-sensitive data)
-*.xlsx
-*.xls
+# Excel files outside data/ folder
 *.csv
 
 # Python
