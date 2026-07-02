@@ -1,78 +1,74 @@
 # Quik SKU Success Predictor
 
-A pre-listing SKU success prediction model for Quik (Careem's quick-commerce). Given a new SKU's disposition sheet scores, the model predicts whether the SKU will be a commercial success **before** it goes live — using only signals available at listing time (no ROS, no availability).
+Pre-listing SKU success prediction for Quik (Careem's quick-commerce). Given a new SKU's disposition sheet, the model predicts whether it will succeed commercially **before** it goes live — using only signals available at listing time.
 
 ---
 
-## Problem
-
-Quik's existing rule-based gate (TP CQ) flags SKUs as list-worthy but cannot rank or score them. The goal is a model that:
-- Predicts success probability at pre-listing stage
-- Uses only **pre-listing signals** (no future data leakage)
-- Is consistent and interpretable across time
-
----
-
-## Approach
-
-### Label Definition
-```
-Success = 1 if max(ROS_m1, ROS_m2) > max(min(Bucket_P10_Peer_ROS, Vel_Floor), 1)
-```
-
-### Feature Set (30 features)
-- 12 raw score columns (CQ, Velocity, Benchmark, Satisfaction, Launch, NMI, Channel, Return, Monitoring, Supplier)
-- 16 engineered interaction features (vel_ratio, above_floor, nmi_total, sat×vel, cq×launch, etc.)
-- 2 enriched features (asp_log, subcat_p50mv from Reference Data sheet)
-
-**Excluded by design:** Availability, ROS_m1, ROS_m2 — these are future/post-listing signals.
-
-### Evaluation: Leave-One-Month-Out (LOMO)
-Train on 4 months → test on held-out month. 5 folds total (Jul25, Sep25, Oct25, Nov25, Dec25).  
-Random k-fold CV is **not** used — it inflates accuracy ~5.7% due to temporal leakage.
-
----
-
-## Results
-
-| Model | LOMO Accuracy | Std | Notes |
-|---|---|---|---|
-| Rule-based (TP CQ) | ~65% | — | Baseline |
-| Logistic Regression | **73.1%** | ±2.0% | Most consistent |
-| Random Forest | 72.4% | ±3.1% | |
-| Gradient Boosting | 71.8% | ±6.8% | Collapses Sep25 (51.8%) |
-
-**LR is the recommended model**: lowest variance across months, all top-15 feature coefficients maintain the same sign across all 5 LOMO folds (sign-stability = strong evidence of real learned patterns).
-
----
-
-## Repository Structure
+## Repository Contents
 
 ```
 quik-sku-success-predictor/
 ├── app/
-│   └── app.py                          # Streamlit prediction app
+│   └── app.py                            # Streamlit prediction app
 ├── notebooks/
-│   ├── quik_lr_final_model.ipynb       # Final production LR model + score_skus()
-│   ├── quik_prelisting_model_clean.ipynb  # Clean LOMO evaluation
-│   ├── quik_sku_all_experiments.ipynb  # Full experiments: rule vs ML, 3 models
-│   └── quik_sku_model_v2.ipynb         # Earlier v2 iteration
+│   └── quik_lr_final_model.ipynb         # Final LR model + score_skus() function
 ├── reports/
-│   ├── final_4way_with_importances.pdf # 4-model comparison + feature importances
-│   ├── lr_coefficient_consistency.pdf  # LR coefficient sign-stability across folds
-│   ├── final_4way_full_metrics.pdf     # Full metrics table (Acc/Prec/Rec/F1/AUC)
-│   ├── final_3way_comparison.pdf       # Rule vs LR vs GBM
-│   ├── rule_vs_lr_focused.pdf          # Focused rule vs best model comparison
-│   └── quik_sku_model_summary.pdf      # Executive summary
+│   ├── final_4way_with_importances.pdf   # Model comparison + feature importances
+│   ├── final_4way_full_metrics.pdf       # Full metrics table (Acc/Prec/Rec/F1/AUC)
+│   └── lr_coefficient_consistency.pdf    # LR coefficient sign-stability across folds
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Streamlit App
+## Model Comparison
 
-The app trains all 3 models on the 5 historical backtest files at startup, then scores new SKU sheets.
+Four variants are benchmarked across 5 months (Jul25–Dec25) using **Leave-One-Month-Out (LOMO)** evaluation:
+
+| Model | Signals used | LOMO Accuracy | Std |
+|---|---|---|---|
+| Rule-based (TP CQ) | Pre-listing scores | ~65% | — |
+| Logistic Regression | Pre-listing only | **73.1%** | ±2.0% |
+| Gradient Boosting | Pre-listing only | 71.8% | ±6.8% |
+| Gradient Boosting + Availability | Pre-listing + Availability | ~75% | ±4.1% |
+
+### Why not use Availability?
+
+Availability is a **post-listing signal** — it measures how consistently a SKU stays in stock after it goes live, which is not known at pre-listing time. Including it leaks future information and makes the model undeployable in production.
+
+The GBM+Availability model is included in `reports/` as a reference ceiling. The deployed app uses **LR / RF / GBM without availability**.
+
+### Why Logistic Regression?
+
+- Lowest variance across months (±2.0% vs GBM's ±6.8%)
+- GBM collapses on Sep25 (51.8% — near random)
+- All top-15 LR feature coefficients maintain the **same sign** across all 5 LOMO folds — evidence of stable, real learned patterns rather than overfitting
+- See `reports/lr_coefficient_consistency.pdf` for the full sign-stability analysis
+
+---
+
+## Label Definition
+
+```
+Success = 1  if  max(ROS_m1, ROS_m2) > max(min(Bucket_P10_Peer_ROS, Vel_Floor), 1)
+```
+
+Training filter: `Availability > 70%` (the official TP CQ listing gate) applied to historical backtest data only.
+
+## Feature Set (30 features)
+
+| Group | Features |
+|---|---|
+| Raw scores (12) | CQ, Velocity, Benchmark, Satisfaction, Launch, NMI Unit%, NMI SKU%, Channel, Return, Monitoring, Supplier, Launch% |
+| Engineered (16) | vel_ratio, vel_ratio², vel_gap, above_floor, launch_pct, nmi_total, nmi_ratio, sat×vel, cq×launch, cq², rtv×mon, bench×sat, is_width, conc_enc, asp_enc, rtv_binary |
+| Enriched (2) | asp_log, subcat_p50mv (from Reference Data sheet) |
+
+**Excluded:** Availability, ROS_m1, ROS_m2 — future/post-listing signals.
+
+---
+
+## Streamlit App
 
 ### Setup
 
@@ -80,7 +76,7 @@ The app trains all 3 models on the 5 historical backtest files at startup, then 
 pip install -r requirements.txt
 ```
 
-Update `BACKTEST_PATHS` in `app/app.py` to point to your local backtest Excel files:
+Update `BACKTEST_PATHS` in `app/app.py` to point to your local backtest files:
 
 ```python
 BACKTEST_PATHS = {
@@ -96,23 +92,24 @@ BACKTEST_PATHS = {
 streamlit run app/app.py
 ```
 
-### Two Modes (auto-detected)
+### Auto-detected Modes
 
 | Mode | Triggered by | Shows |
 |---|---|---|
-| **Real-time** | No `Success` column | Predictions, probabilities, confidence, signal breakdown |
-| **Backtest** | `Success` column present (0/1) | + Accuracy metrics, confusion matrices, rule comparison |
+| **Real-time** | No `Success` column in uploaded sheet | Predictions, probabilities, confidence, signal breakdown |
+| **Backtest / Validation** | `Success` column present (0/1 values) | + Accuracy, confusion matrices, rule-based comparison |
 
 ### Input Format
+
 - Excel file with `Main Working` sheet
-- Headers on row 5 (index 4) — or 6/7, auto-detected
-- `Refrence Data` sheet (optional) — used for Subcat P50 MV lookups
+- Headers on row 5 (index 4) — rows 6 and 7 also auto-detected
+- `Refrence Data` sheet (optional) — used for Subcat P50 MV lookup
+- No `Success` or `TP CQ` columns required for real-time use
 
----
+### Sidebar Controls
 
-## Key Design Decisions
-
-- **No availability filter on input** by default — real-time sheets may not have Availability populated yet. Slider in sidebar lets you apply a threshold if needed.
-- **Ensemble = mean** of LR + RF + GBM probabilities — more stable than any single model.
-- **Model Votes (of 3)** column shows how many of the 3 models agree with the ensemble direction.
-- Backtest training uses `Availability > 70%` filter (the official TP CQ listing gate) to ensure training labels reflect post-filter outcomes.
+| Control | Default | Purpose |
+|---|---|---|
+| Min Availability % slider | 0 (off) | Filter SKUs below a given availability threshold |
+| Decision threshold | 0.50 | Probability cutoff for Success / Fail label |
+| Show engineered features | Off | Inspect the 30 engineered features per SKU |
