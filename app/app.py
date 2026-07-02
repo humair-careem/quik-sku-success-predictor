@@ -268,7 +268,7 @@ def train_models():
 
 
 # ── Predict ───────────────────────────────────────────────────────────────────
-def predict(models, df, threshold):
+def predict(models, df, model_thresholds, global_threshold):
     X = df[BASE_FEATURES].fillna(0)
     probas = {}
     for name, model in models.items():
@@ -276,11 +276,14 @@ def predict(models, df, threshold):
     ensemble = np.stack(list(probas.values())).mean(axis=0)
     probas["Ensemble"] = ensemble
 
-    preds = {name: (p >= threshold).astype(int) for name, p in probas.items()}
+    preds = {}
+    for name, p in probas.items():
+        t = model_thresholds.get(name, global_threshold) if name != "Ensemble" else global_threshold
+        preds[name] = (p >= t).astype(int)
     return probas, preds
 
 
-def build_output(df, probas, preds, threshold, has_labels, has_rule):
+def build_output(df, probas, preds, threshold, model_thresholds, has_labels, has_rule):
     out = df.copy()
 
     # Identifier columns (shown first)
@@ -290,8 +293,9 @@ def build_output(df, probas, preds, threshold, has_labels, has_rule):
 
     for name in list(MODEL_META.keys()) + ["Ensemble"]:
         out[f"{name} Prob"] = np.round(probas[name], 3)
+        t = model_thresholds.get(name, threshold) if name != "Ensemble" else threshold
         label = "Final Prediction" if name == "Ensemble" else f"{MODEL_META[name]['short']} Pred"
-        out[label] = np.where(probas[name] >= threshold, "✅ Success", "❌ Fail")
+        out[label] = np.where(probas[name] >= t, "✅ Success", "❌ Fail")
 
     p = probas["Ensemble"]
     out["Confidence"] = np.where(
@@ -406,15 +410,33 @@ st.caption("Pre-listing model — No Availability / ROS signals | LR · RF · GB
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
+
     avail_threshold = st.slider(
         "Min Availability % (0 = no filter)", 0, 100, 0, 5,
-        help="Filter out SKUs below this availability. Training used 70%."
+        help="Filter out SKUs below this availability before scoring. Training used 70%."
     )
     avail_filter = avail_threshold > 0
-    threshold = st.slider(
-        "Decision threshold", 0.30, 0.70, 0.50, 0.05,
-        help="Probability cutoff for Success/Fail"
+
+    st.markdown("**Decision threshold** *(applies to all models)*")
+    global_threshold = st.slider(
+        "Global threshold", 0.30, 0.70, 0.50, 0.05,
+        help="Default probability cutoff for Success/Fail — overridable per model below."
     )
+
+    with st.expander("🔧 Per-model threshold overrides"):
+        st.caption("Leave at 0.00 to use the global threshold above.")
+        lr_thresh_raw  = st.slider("Logistic Regression", 0.00, 0.70, 0.00, 0.05, key="lr_t")
+        rf_thresh_raw  = st.slider("Random Forest",        0.00, 0.70, 0.00, 0.05, key="rf_t")
+        gbm_thresh_raw = st.slider("Gradient Boosting",    0.00, 0.70, 0.00, 0.05, key="gbm_t")
+
+    model_thresholds = {
+        "Logistic Regression": lr_thresh_raw  if lr_thresh_raw  > 0 else global_threshold,
+        "Random Forest":       rf_thresh_raw  if rf_thresh_raw  > 0 else global_threshold,
+        "Gradient Boosting":   gbm_thresh_raw if gbm_thresh_raw > 0 else global_threshold,
+    }
+    # Ensemble uses the mean of the three model thresholds
+    threshold = global_threshold  # kept for legacy use in plots
+
     show_features = st.checkbox("Show engineered features", value=False)
     st.divider()
     st.header("📁 Upload Sheets")
@@ -497,8 +519,8 @@ for tab, uploaded_file in zip(tabs[:len(uploaded_files)], uploaded_files):
             continue
 
         # Run predictions
-        probas, preds = predict(models, df, threshold)
-        out_df, id_cols = build_output(df, probas, preds, threshold, has_labels, has_rule)
+        probas, preds = predict(models, df, model_thresholds, global_threshold)
+        out_df, id_cols = build_output(df, probas, preds, global_threshold, model_thresholds, has_labels, has_rule)
 
         # ── Summary metrics ────────────────────────────────────────────────────
         ens_p = probas["Ensemble"]
